@@ -65,13 +65,43 @@ function Test-IsAdministrator {
 function Assert-Administrator { if (-not (Test-IsAdministrator)) { Throw-SwitchError AccessDenied 'Administrator privileges are required.' } }
 function Assert-Slot { param([string]$Slot) if ($Slot -notin @('modern','legacy')) { Throw-SwitchError InvalidManifest 'Unknown environment slot.' } }
 function Assert-SafeIdentifier { param([string]$Value) if ($Value -notmatch '^[A-Za-z0-9_-]{1,80}$') { Throw-SwitchError InvalidManifest 'Invalid identifier.' } }
+function Get-SwitcherRoot {param([string]$RuntimeDirectory)
+    $runtime=[IO.Path]::GetFullPath($RuntimeDirectory).TrimEnd('\','/')
+    $manifest=Join-Path $runtime 'release-manifest.json'
+    if([IO.File]::Exists($manifest)){
+        $record=[IO.File]::ReadAllText($manifest,[Text.Encoding]::UTF8)|ConvertFrom-Json
+        if(Get-ObjectValue $record InstalledRuntime $false){
+            if((Split-Path $runtime -Leaf) -ine 'App' -or (Split-Path (Split-Path $runtime -Parent) -Leaf) -ine 'Data'){Throw-SwitchError UnsafePath 'Invalid portable runtime layout.'}
+            return (Split-Path $runtime -Parent)
+        }
+    }
+    Join-Path $runtime 'Data'
+}
+function Assert-ContextPhysicalPath {param([string]$Path)
+    if($Path -notmatch '^[a-zA-Z]:\\'){Throw-SwitchError UnsafePath 'A local absolute directory is required.'}
+    $current=$Path
+    while($current){
+        if(Test-Path -LiteralPath $current){
+            if(((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){Throw-SwitchError UnsafePath 'A context directory or ancestor is a reparse point.'}
+        }
+        $parent=[IO.Directory]::GetParent($current)
+        if(-not $parent){break};$current=$parent.FullName
+    }
+}
 function New-SwitchContext {
     param([string]$Root,[string]$OwnerSid,[string]$ProfileRoot,[ValidateSet('Live','Simulation')][string]$Mode='Live',$Platform=$null)
     if ($OwnerSid -notmatch '^S-1-\d+(-\d+)+$') { Throw-SwitchError OwnerMismatch 'Invalid owner SID.' }
     $fullRoot=[IO.Path]::GetFullPath($Root).TrimEnd('\')
     $profile=[IO.Path]::GetFullPath($ProfileRoot).TrimEnd('\')
-    if ($Mode -eq 'Live' -and $fullRoot -ine (Join-Path $env:ProgramData 'GHUBSwitcher')) { Throw-SwitchError UnsafePath 'Live root must be the registered ProgramData location.' }
-    [pscustomobject]@{SchemaVersion=1;Root=$fullRoot;OwnerSid=$OwnerSid;ProfileRoot=$profile;Mode=$Mode;Platform=$Platform}
+    $portable=$false
+    if($Mode -eq 'Live'){Assert-ContextPhysicalPath $fullRoot;Assert-ContextPhysicalPath $profile}
+    if ($Mode -eq 'Live' -and $fullRoot -ine (Join-Path $env:ProgramData 'GHUBSwitcher')) {
+        if($fullRoot -notmatch '^[a-zA-Z]:\\.+\\Data$'){Throw-SwitchError UnsafePath 'Live root must be a local portable Data directory.'}
+        $registration=Read-AtomicJson (Join-Path $fullRoot 'registration.json')
+        if(-not(Get-ObjectValue $registration Portable $false) -or (Get-ObjectValue $registration Root '') -ine $fullRoot -or $registration.OwnerSid -cne $OwnerSid -or $registration.ProfileRoot -ine $profile){Throw-SwitchError PortableRootMismatch 'Use the registered portable folder; do not move a prepared environment while it is managed.'}
+        $portable=$true
+    }
+    [pscustomobject]@{SchemaVersion=1;Root=$fullRoot;OwnerSid=$OwnerSid;ProfileRoot=$profile;Mode=$Mode;Platform=$Platform;Portable=$portable}
 }
 function New-SwitchState { param($Context,[string]$Active,[string]$BootId)
     Assert-Slot $Active
@@ -114,8 +144,32 @@ function Set-SwitchPhase { param($State,[string]$NextPhase)
 }
 function Enter-SwitchLock { param($Context)
     $dir=Join-Path $Context.Root 'State'; [IO.Directory]::CreateDirectory($dir) | Out-Null
-    try { return [IO.FileStream]::new((Join-Path $dir 'worker.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }
-    catch [IO.IOException] { Throw-SwitchError Busy 'Another worker is running.' }
+    $mutex=$null;$file=$null
+    if($Context.Mode -eq 'Live'){
+        if(-not(Get-Variable LiveLeaseOwners -Scope Script -ErrorAction SilentlyContinue)){$script:LiveLeaseOwners=@{}}
+        if($script:LiveLeaseOwners.ContainsKey('installation')){Throw-SwitchError Busy 'Another live folder is already managing G HUB.'}
+        $security=[Security.AccessControl.MutexSecurity]::new()
+        foreach($sid in @('S-1-5-18','S-1-5-32-544',$Context.OwnerSid)){
+            $security.AddAccessRule([Security.AccessControl.MutexAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','Allow'))
+        }
+        $created=$false
+        $mutex=[Threading.Mutex]::new($false,'Global\GHUBSwitcher-ActiveInstallation',[ref]$created,$security)
+        $acquired=$false
+        try{$acquired=$mutex.WaitOne(0)}catch [Threading.AbandonedMutexException]{$acquired=$true}
+        if(-not $acquired){$mutex.Dispose();Throw-SwitchError Busy 'Another live folder is already managing G HUB.'}
+        $script:LiveLeaseOwners['installation']=$true
+    }
+    try{$file=[IO.FileStream]::new((Join-Path $dir 'worker.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{
+        if($mutex){$script:LiveLeaseOwners.Remove('installation');$mutex.ReleaseMutex();$mutex.Dispose()}
+        Throw-SwitchError Busy 'Another worker is running.'
+    }
+    if(-not $mutex){return $file}
+    $lease=[pscustomobject]@{File=$file;Mutex=$mutex;Owners=$script:LiveLeaseOwners;Disposed=$false}
+    $lease|Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+        if($this.Disposed){return};$this.Disposed=$true
+        $this.File.Dispose();$this.Owners.Remove('installation');$this.Mutex.ReleaseMutex();$this.Mutex.Dispose()
+    }
+    return $lease
 }
 function Read-ValidJournal { param($Context,[string]$TransactionId)
     Assert-SafeIdentifier $TransactionId

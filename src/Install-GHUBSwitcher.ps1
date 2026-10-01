@@ -18,7 +18,7 @@ $null=[Security.Principal.SecurityIdentifier]::new($OwnerSid)
 $profile=(Get-ItemProperty -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\"+$OwnerSid)).ProfileImagePath
 $profile=[Environment]::ExpandEnvironmentVariables($profile)
 $null=Assert-NoReparsePoint $profile
-$root=Join-Path $env:ProgramData 'GHUBSwitcher'
+$root=Join-Path $PSScriptRoot 'Data'
 $null=Assert-NoReparsePoint $root
 if(Test-Path -LiteralPath $root){throw 'AlreadyInstalled: Existing root must be inspected; refusing to overwrite it.'}
 $oldSource=Join-Path $PSScriptRoot 'Installers/lghub_installer_2021.3.exe'
@@ -26,7 +26,7 @@ $guard=[IO.File]::Open($oldSource,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.
 $null=Get-VerifiedLegacyInstaller $oldSource
 $installerHash=($release.Files|Where-Object {$_.Path.Replace('\','/') -ieq 'Installers/lghub_installer_2021.3.exe'}).Sha256
 if((Get-FileHash -LiteralPath $oldSource).Hash.ToLowerInvariant() -cne $installerHash){throw 'Legacy installer hash mismatch.'}
-$stage=Join-Path $env:ProgramData ('GHUBSwitcher.Install-'+[guid]::NewGuid().ToString('N'))
+$stage=Join-Path $PSScriptRoot ('GHUBSwitcher.Install-'+[guid]::NewGuid().ToString('N'))
 $null=Assert-NoReparsePoint $stage
 function Protect-Directory([string]$Path,[bool]$OwnerRead){
     [IO.Directory]::CreateDirectory($Path)|Out-Null
@@ -37,9 +37,9 @@ function Protect-Directory([string]$Path,[bool]$OwnerRead){
     else{$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($OwnerSid),'Traverse','None','None','Allow'))}
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
-Protect-Directory $stage $false
+Protect-Directory $stage $true
 foreach($name in @('App','Status')){Protect-Directory (Join-Path $stage $name) $true}
-foreach($name in @('State','Manifests','Transactions','Backups','Environments','DriverPackages','Installers','Rescue','RestoreStage')){Protect-Directory (Join-Path $stage $name) $false}
+foreach($name in @('State','Manifests','Transactions','Backups','Environments','DriverPackages','Installers','Rescue','RestoreStage')){Protect-Directory (Join-Path $stage $name) $true}
 foreach($file in $release.Files){
     if($file.Path -like 'source/*' -or $file.Path -like 'tests/*' -or $file.Path -like 'docs/*' -or $file.Path -like 'verification/*' -or $file.Path -like 'Installers/*'){continue}
     $target=Join-Path $stage ('App/'+$file.Path)
@@ -53,8 +53,8 @@ Copy-Item -LiteralPath $oldSource -Destination $stagedInstaller
 if((Get-FileHash -LiteralPath $stagedInstaller).Hash.ToLowerInvariant() -cne $installerHash){throw 'Installed legacy installer failed hash verification.'}
 $null=Get-VerifiedLegacyInstaller $stagedInstaller
 $guard.Dispose();$guard=$null
-@{SchemaVersion=1;Files=@($release.Files|Where-Object {$_.Path -notlike 'source/*' -and $_.Path -notlike 'tests/*' -and $_.Path -notlike 'docs/*' -and $_.Path -notlike 'verification/*' -and $_.Path -notlike 'Installers/*'})}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $stage 'App/release-manifest.json') -Encoding UTF8
-$registration=[pscustomobject]@{SchemaVersion=1;OwnerSid=$OwnerSid;ProfileRoot=$profile;LegacyInstallerPath=$protectedInstaller;RegistryRoots=@();ValidationMode='InstallationAndConfiguration';InstalledUtc=[DateTime]::UtcNow.ToString('o')}
+@{SchemaVersion=1;InstalledRuntime=$true;Files=@($release.Files|Where-Object {$_.Path -notlike 'source/*' -and $_.Path -notlike 'tests/*' -and $_.Path -notlike 'docs/*' -and $_.Path -notlike 'verification/*' -and $_.Path -notlike 'Installers/*'})}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $stage 'App/release-manifest.json') -Encoding UTF8
+$registration=[pscustomobject]@{SchemaVersion=1;Portable=$true;Root=$root;OwnerSid=$OwnerSid;ProfileRoot=$profile;LegacyInstallerPath=$protectedInstaller;RegistryRoots=@();ValidationMode='InstallationAndConfiguration';InstalledUtc=[DateTime]::UtcNow.ToString('o')}
 $registrationPath=Join-Path $stage 'registration.json'
 Write-AtomicJson $registrationPath $registration
 $acl=Get-Acl -LiteralPath $registrationPath
@@ -64,14 +64,14 @@ Write-AtomicJson (Join-Path $stage 'Status/environments.json') @{ModernReady=$fa
 $null=Assert-NoReparsePoint $root
 [IO.Directory]::Move($stage,$root)
 $stage=$null
-Write-Host '切换器已安装，继续按主窗口提示准备两套环境。'
+Write-Host ('便携数据目录：'+$root)
 }catch{
     if($PauseOnFailure){Write-Host ('安装未完成：'+$_.Exception.Message);Read-Host '按 Enter 返回主窗口'|Out-Null;exit 1}
     throw
 }finally{
     if($guard){$guard.Dispose()}
     if($stage -and (Test-Path -LiteralPath $stage)){
-        $parent=[IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\')
+        $parent=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
         if([IO.Path]::GetFullPath($stage).StartsWith($parent+'\',[StringComparison]::OrdinalIgnoreCase) -and (Split-Path $stage -Leaf) -match '^GHUBSwitcher\.Install-[a-f0-9]{32}$'){
             $null=Assert-NoReparsePoint $stage
             Remove-Item -LiteralPath $stage -Recurse -Force

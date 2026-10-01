@@ -233,14 +233,31 @@ function Apply-EnvironmentServices { param($Context,$Manifest,[switch]$ForLaunch
     }
     New-OperationResult
 }
+function Assert-PortableInstance {param($Context)
+    if(-not(Get-ObjectValue $Context Portable $false)){return}
+    $script=Join-Path $Context.Root 'App/Start-GHUBUserSession.ps1'
+    $existing=Get-ScheduledTask -TaskName 'GHUBSwitcher-UserSession' -ErrorAction SilentlyContinue
+    if($existing -and ($existing.Actions.Arguments -join ' ').IndexOf('"'+$script+'"',[StringComparison]::OrdinalIgnoreCase) -lt 0){Throw-SwitchError OtherInstance 'Another portable folder already manages G HUB; exit its management first.'}
+}
 function Install-StartupControl { param($Context,$Manifest)
     Assert-Administrator
+    Assert-PortableInstance $Context
+    # No vendor login entry may start G HUB during an interrupted directory swap.
     foreach ($entry in $Manifest.Startup) {
         $actual=Read-RegistryValue $entry.Path $entry.Name
         if ($actual.Exists -and [string]$actual.Value -eq [string]$entry.Value) { Remove-ItemProperty -LiteralPath $entry.Path -Name $entry.Name -ErrorAction Stop }
         elseif ($actual.Exists) { Throw-SwitchError ExternalChange 'Startup entry changed since capture.' }
     }
     foreach ($task in $Manifest.Tasks) { Disable-ScheduledTask -TaskName $task.Name -TaskPath $task.Path | Out-Null }
+    if(Get-ObjectValue $Context Portable $false){
+        $app=Join-Path $Context.Root 'App'
+        $script=Join-Path $app 'Start-GHUBUserSession.ps1'
+        $principal=New-ScheduledTaskPrincipal -UserId $Context.OwnerSid -LogonType Interactive -RunLevel Limited
+        $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$script+'"')
+        $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName 'GHUBSwitcher-UserSession' -Action $action -Principal $principal -Settings $settings -Force|Out-Null
+        return (New-OperationResult)
+    }
     $app=Join-Path $Context.Root 'App'; $shell="$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $system=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

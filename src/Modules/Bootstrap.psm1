@@ -16,11 +16,12 @@ function Invoke-PreservedMoves {param($Context,[string]$TransactionId,[string]$N
             $full=Assert-NoReparsePoint $path
             if(-not $full.StartsWith($Context.Root+'\',[StringComparison]::OrdinalIgnoreCase)){$null=Test-ManagedPath $Context $full $move.Role}
         }
+        Resolve-InterruptedTransfer $Context $move.From $move.To $move.Identity -Rollback
         if(Test-SameDirectoryIdentity $move.To $move.Identity){continue}
         if((Test-Path -LiteralPath $move.To) -or -not (Test-SameDirectoryIdentity $move.From $move.Identity)){Throw-SwitchError RecoveryRequired 'Preserved directory identity changed.'}
         [IO.Directory]::CreateDirectory((Split-Path $move.To -Parent))|Out-Null
         Add-JournalEntry $Context $TransactionId Intent ($Name+'-'+$move.Role) $move $null
-        Move-ManagedDirectory $move.From $move.To
+        Move-ManagedDirectory $move.From $move.To -Context $Context -Role $move.Role
         Add-JournalEntry $Context $TransactionId Done ($Name+'-'+$move.Role) $move $null
     }
 }
@@ -30,7 +31,7 @@ function Initialize-LegacyDataRoots {param($Context,[string]$TransactionId)
     if(-not $saved.Count){
         foreach($role in @('LocalData','RoamingData','MachineData')){
             $path=Test-ManagedPath $Context $dirs[$role] $role
-            if(Test-Path -LiteralPath $path){$moves+=[pscustomobject]@{Role=$role;From=$path;To=(Join-Path $Context.Root "Rescue/$TransactionId/pre-legacy/$role");Identity=(Get-DirectoryIdentity $path)}}
+            if(Test-Path -LiteralPath $path){$moves+=[pscustomobject]@{Role=$role;From=$path;To=(Join-Path $Context.Root "Rescue/$TransactionId/pre-legacy/$role");Identity=(Get-DirectoryIdentity $path -Context $Context)}}
         }
     }
     Invoke-PreservedMoves $Context $TransactionId 'isolate-data' $moves
@@ -47,7 +48,7 @@ function Repair-BackupSlotLayout {param($Context,$Backup,[string]$TransactionId,
         foreach($restore in $RestoreMoves){
             $role=$restore.Role
             $park=Test-ManagedPath $Context (Join-Path $Context.Root "Environments/$($Backup.Slot)/$role") $role
-            if(Test-Path -LiteralPath $park){$moves+=[pscustomobject]@{Role=$role;From=$park;To=(Join-Path $Context.Root "Rescue/$TransactionId/parked-$($Backup.Slot)/$role");Identity=(Get-DirectoryIdentity $park)}}
+            if(Test-Path -LiteralPath $park){$moves+=[pscustomobject]@{Role=$role;From=$park;To=(Join-Path $Context.Root "Rescue/$TransactionId/parked-$($Backup.Slot)/$role");Identity=(Get-DirectoryIdentity $park -Context $Context)}}
             $otherPark=Test-ManagedPath $Context (Join-Path $Context.Root "Environments/$other/$role") $role
             if(Test-Path -LiteralPath $otherPark){continue}
             $proof=@($journal|Where-Object {$_.Kind -eq 'Intent' -and $_.StepId -like 'directory-*' -and $_.Before.From -ieq $otherPark})
@@ -59,7 +60,7 @@ function Repair-BackupSlotLayout {param($Context,$Backup,[string]$TransactionId,
                 $identity=Get-ObjectValue (Get-ObjectValue $manifest DirectoryIdentities $null) $role $null
             }
             if($identity -and (Test-SameDirectoryIdentity $restore.Archive $identity)){
-                $moves+=[pscustomobject]@{Role=$role;From=$restore.Archive;To=$otherPark;Identity=$identity}
+                $moves+=[pscustomobject]@{Role=$role;From=$restore.Archive;To=$otherPark;Identity=(Get-DirectoryIdentity $restore.Archive -Context $Context)}
             }elseif(Test-Path -LiteralPath $manifestPath){Throw-SwitchError RecoveryRequired 'Registered inactive slot cannot be identified. Preserved files require inspection.'}
         }
     }
@@ -82,8 +83,8 @@ function Restore-BackupDirectories {param($Context,$Backup,[string]$TransactionI
             if((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $archive)){Throw-SwitchError RecoveryRequired 'Unexpected staging directory.'}
             [IO.Directory]::CreateDirectory((Split-Path $stage -Parent))|Out-Null
             Copy-Item -LiteralPath (Join-Path $Backup.Path $role) -Destination $stage -Recurse -Force
-            $identity=$null;if(Test-Path -LiteralPath $dirs[$role]){$identity=Get-DirectoryIdentity $dirs[$role]}
-            $moves+=[pscustomobject]@{Role=$role;Active=$dirs[$role];Stage=$stage;Archive=$archive;OldIdentity=$identity;NewIdentity=(Get-DirectoryIdentity $stage)}
+            $identity=$null;if(Test-Path -LiteralPath $dirs[$role]){$identity=Get-DirectoryIdentity $dirs[$role] -Context $Context}
+            $moves+=[pscustomobject]@{Role=$role;Active=$dirs[$role];Stage=$stage;Archive=$archive;OldIdentity=$identity;NewIdentity=(Get-DirectoryIdentity $stage -Context $Context)}
         }
         Add-JournalEntry $Context $TransactionId Checkpoint restore-plan $null $moves
     }
@@ -93,17 +94,19 @@ function Restore-BackupDirectories {param($Context,$Backup,[string]$TransactionI
             $full=Assert-NoReparsePoint $path
             if(-not $full.StartsWith($Context.Root+'\',[StringComparison]::OrdinalIgnoreCase)){Throw-SwitchError UnsafePath 'Restore staging path escaped the protected root.'}
         }
+        Resolve-InterruptedTransfer $Context $move.Active $move.Archive $move.OldIdentity -Rollback
+        Resolve-InterruptedTransfer $Context $move.Stage $move.Active $move.NewIdentity -Rollback
         if(Test-SameDirectoryIdentity $move.Active $move.NewIdentity){continue}
         if(Test-Path -LiteralPath $move.Active){
             if(-not $move.OldIdentity -or -not (Test-SameDirectoryIdentity $move.Active $move.OldIdentity)){Throw-SwitchError RecoveryRequired 'Active directory identity changed during restore.'}
             [IO.Directory]::CreateDirectory((Split-Path $move.Archive -Parent))|Out-Null
             Add-JournalEntry $Context $TransactionId Intent ('restore-archive-'+$move.Role) $move $null
-            [IO.Directory]::Move($move.Active,$move.Archive)
+            Move-ManagedDirectory $move.Active $move.Archive -Context $Context -Role $move.Role
             Add-JournalEntry $Context $TransactionId Done ('restore-archive-'+$move.Role) $move $null
         }
         if(-not (Test-SameDirectoryIdentity $move.Stage $move.NewIdentity)){Throw-SwitchError RecoveryRequired 'Restore staging identity changed.'}
         Add-JournalEntry $Context $TransactionId Intent ('restore-active-'+$move.Role) $move $null
-        [IO.Directory]::Move($move.Stage,$move.Active)
+        Move-ManagedDirectory $move.Stage $move.Active -Context $Context -Role $move.Role
         Add-JournalEntry $Context $TransactionId Done ('restore-active-'+$move.Role) $move $null
     }
     Restore-EnvironmentAcl $Context $Backup.Trees
@@ -166,7 +169,7 @@ function Capture-CurrentEnvironment {param($Context,[string]$Slot,[switch]$Autom
     Write-Host '正在导出驱动恢复包并校验程序文件。'
     $manifest.DriverPackages=@(Export-ManagedDrivers $Context $manifest)
     $manifest.Files=@(Get-TreeFiles $manifest.Directories.Program | Where-Object {-not $_.IsDirectory})
-    $identities=[ordered]@{};foreach($role in (Get-ActiveDirectories $Context).Keys){$identities[$role]=Get-DirectoryIdentity $manifest.Directories[$role]}
+    $identities=[ordered]@{};foreach($role in (Get-ActiveDirectories $Context).Keys){$identities[$role]=Get-DirectoryIdentity $manifest.Directories[$role] -Context $Context}
     $manifest|Add-Member -NotePropertyName DirectoryIdentities -NotePropertyValue $identities -Force
     $manifest.UpdatePolicy=[pscustomobject]@{Verified=$true;ProductVersion=$manifest.ProductVersion;Method='ObservedUI';Evidence=@([pscustomobject]@{ObserverSid=$Context.OwnerSid;ObservedUtc=[DateTime]::UtcNow.ToString('o');Statement='User observed automatic updates disabled in this version; setting schema not modified by switcher.'})}
     Write-Host '正在复制并校验程序和配置备份；耗时取决于数据量。'
@@ -178,14 +181,18 @@ function Capture-CurrentEnvironment {param($Context,[string]$Slot,[switch]$Autom
 }
 function Initialize-GHUBSwitcher {param($Context,[string]$LegacyInstallerPath,[switch]$AutomaticUpdatesObservedOff)
     Assert-Administrator
-    if(Test-Path -LiteralPath (Join-Path $Context.Root 'Manifests/modern.json')){Throw-SwitchError AlreadyInitialized 'Modern environment already registered.'}
-    $installer=Get-Item -LiteralPath $LegacyInstallerPath
-    $signature=Get-AuthenticodeSignature -LiteralPath $installer.FullName
-    Assert-LegacyPreparation $true ($signature.Status -eq 'Valid' -and $signature.SignerCertificate.Subject -match 'O=Logitech Inc') $installer.VersionInfo.FileVersion
-    $manifest=Capture-CurrentEnvironment $Context modern -AutomaticUpdatesObservedOff:$AutomaticUpdatesObservedOff
-    $state=New-SwitchState $Context modern (Get-BootId);Write-SwitchState $Context $state
-    $null=Install-StartupControl $Context $manifest
-    Publish-SwitchStatus $Context $state 'Modern backup prepared. Legacy environment is not installed yet.'
+    $lease=Enter-SwitchLock $Context
+    try{
+        Assert-PortableInstance $Context
+        if(Test-Path -LiteralPath (Join-Path $Context.Root 'Manifests/modern.json')){Throw-SwitchError AlreadyInitialized 'Modern environment already registered.'}
+        $installer=Get-Item -LiteralPath $LegacyInstallerPath
+        $signature=Get-AuthenticodeSignature -LiteralPath $installer.FullName
+        Assert-LegacyPreparation $true ($signature.Status -eq 'Valid' -and $signature.SignerCertificate.Subject -match 'O=Logitech Inc') $installer.VersionInfo.FileVersion
+        $manifest=Capture-CurrentEnvironment $Context modern -AutomaticUpdatesObservedOff:$AutomaticUpdatesObservedOff
+        $state=New-SwitchState $Context modern (Get-BootId);Write-SwitchState $Context $state
+        $null=Install-StartupControl $Context $manifest
+        Publish-SwitchStatus $Context $state 'Modern backup prepared. Legacy environment is not installed yet.'
+    }finally{$lease.Dispose()}
     Invoke-GHUBSwitch $Context modern
 }
 function Capture-LegacyEnvironment {param($Context,[string]$LegacyInstallerPath)
@@ -291,7 +298,7 @@ function Restore-ModernBackup {param($Context)
         $backup=Read-AtomicJson (Join-Path $modern.BackupPath 'backup.json')
         $null=Restore-BackupDirectories $Context $backup $state.TransactionId
         if($installationMode){$modern|Add-Member Acls $backup.Trees -Force}
-        $identities=[ordered]@{};foreach($role in (Get-ActiveDirectories $Context).Keys){$identities[$role]=Get-DirectoryIdentity (Get-ActiveDirectories $Context)[$role]}
+        $identities=[ordered]@{};foreach($role in (Get-ActiveDirectories $Context).Keys){$identities[$role]=Get-DirectoryIdentity (Get-ActiveDirectories $Context)[$role] -Context $Context}
         $modern|Add-Member -NotePropertyName DirectoryIdentities -NotePropertyValue $identities -Force
         $null=Apply-EnvironmentServices $Context $modern
         $null=Restore-EnvironmentAppLocalKernel $Context $modern

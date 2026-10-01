@@ -1,7 +1,7 @@
 ﻿param([Parameter(Mandatory=$true)][ValidateSet('Switch','RestoreModern','BootResume','Monitor','Initialize','PrepareLegacy','MaintainModern','RemoveControl')][string]$Action,[ValidateSet('modern','legacy')][string]$TargetSlot='modern')
 $ErrorActionPreference='Stop'
 foreach($name in @('Core','Inventory','Storage','Drivers','Lifecycle','Coordinator','Bootstrap')){Import-Module (Join-Path $PSScriptRoot "Modules/$name.psm1") -DisableNameChecking}
-$root=Join-Path $env:ProgramData 'GHUBSwitcher'
+$root=Split-Path $PSScriptRoot -Parent
 Assert-Administrator
 $registration=Read-AtomicJson (Join-Path $root 'registration.json')
 if(Get-ObjectValue $registration Detached $false){

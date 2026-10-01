@@ -7,6 +7,7 @@ function Get-VerifiedPackageBootstrap {param([string]$Directory,[switch]$Install
     if($release.SchemaVersion -ne 1 -or @($release.Files).Count -eq 0){throw 'Invalid release manifest.'}
     $required=@('GHUBSwitcher.exe','Start-GHUBSwitcher.ps1','Install-GHUBSwitcher.ps1','Invoke-GHUBWorker.ps1','Start-GHUBUserSession.ps1','PackagePreflight.ps1','Native/GHubSwitcher.Native.dll')
     foreach($module in @('Core','Inventory','Storage','Drivers','Lifecycle','Coordinator','Bootstrap','InstallerAudit','ExternalRecovery','Release')){$required+=('Modules/'+$module+'.psm1')}
+    $required+='Modules/Transfers.ps1'
     if(-not $InstalledRuntime){$required+='Installers/lghub_installer_2021.3.exe'}
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach($file in $release.Files){

@@ -40,10 +40,17 @@ function Get-VerifiedPathIdentity { param([string]$Path)
     }
     return $info
 }
-function Get-DirectoryIdentity { param([string]$Path)
+function Get-DirectoryIdentity { param([string]$Path,$Context=$null)
     $full=Assert-NoReparsePoint $Path
     $info=Get-VerifiedPathIdentity $full
-    [pscustomobject]@{VolumeSerial=$info.VolumeSerial;FileId=$info.FileId}
+    $identity=[pscustomobject]@{VolumeSerial=$info.VolumeSerial;FileId=$info.FileId}
+    if($Context){
+        $role=Split-Path $full -Leaf
+        foreach($entry in (Get-ActiveDirectories $Context).GetEnumerator()){if($entry.Value -ieq $full){$role=$entry.Key;break}}
+        $identity|Add-Member -NotePropertyName TransferRoot -NotePropertyValue $Context.Root
+        $identity|Add-Member -NotePropertyName Role -NotePropertyValue $role
+    }
+    return $identity
 }
 function Assert-GHUBPhysicalDirectories { param($Context)
     $directories=Get-ActiveDirectories $Context
@@ -64,7 +71,8 @@ function Assert-GHUBPhysicalDirectories { param($Context)
 function Test-SameDirectoryIdentity { param([string]$Path,$Identity)
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     $actual=Get-DirectoryIdentity $Path
-    return ($actual.VolumeSerial -eq $Identity.VolumeSerial -and $actual.FileId -eq $Identity.FileId)
+    if($actual.VolumeSerial -eq $Identity.VolumeSerial -and $actual.FileId -eq $Identity.FileId){return $true}
+    return (Test-TransferredIdentity $Path $Identity $actual)
 }
 function Get-TreeFiles { param([string]$Root)
     $full=Assert-NoReparsePoint $Root
@@ -76,9 +84,10 @@ function Get-TreeFiles { param([string]$Root)
     }
 }
 function Move-ManagedDirectory {
-    param([string]$From,[string]$To,[ValidateRange(0,30000)][int]$RetryTimeoutMilliseconds=10000)
-    $identity=Get-DirectoryIdentity $From
+    param([string]$From,[string]$To,[ValidateRange(0,30000)][int]$RetryTimeoutMilliseconds=10000,$Context=$null,[string]$Role='')
+    $identity=Get-DirectoryIdentity $From -Context $Context
     $null=Assert-NoReparsePoint $To
+    if([IO.Path]::GetPathRoot($From) -ine [IO.Path]::GetPathRoot($To)){return (Invoke-CrossVolumeTransfer $Context $From $To $identity $Role)}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     while($true){
         if(-not(Test-SameDirectoryIdentity $From $identity)){Throw-SwitchError ExternalChange 'The directory identity changed while waiting for its file handles to close.'}
@@ -106,8 +115,7 @@ function Invoke-DirectoryExchange { param($Context,[string]$SourceSlot,[string]$
         $park=Test-ManagedPath $Context (Join-Path $Context.Root "Environments/$SourceSlot/$role") $role
         $target=Test-ManagedPath $Context (Join-Path $Context.Root "Environments/$TargetSlot/$role") $role
         if (-not (Test-Path -LiteralPath $active) -or -not (Test-Path -LiteralPath $target) -or (Test-Path -LiteralPath $park)) { Throw-SwitchError UnsafePath "Unexpected directory state for $role" }
-        $sourceId=Get-DirectoryIdentity $active; $targetId=Get-DirectoryIdentity $target
-        if ($sourceId.VolumeSerial -ne $targetId.VolumeSerial) { Throw-SwitchError UnsafePath 'Cross-volume exchange is forbidden.' }
+        $sourceId=Get-DirectoryIdentity $active -Context $Context; $targetId=Get-DirectoryIdentity $target -Context $Context
         $moves+=@([pscustomobject]@{Role=$role;From=$active;To=$park;Identity=$sourceId},[pscustomobject]@{Role=$role;From=$target;To=$active;Identity=$targetId})
     }
     $n=0
@@ -118,7 +126,7 @@ function Invoke-DirectoryExchange { param($Context,[string]$SourceSlot,[string]$
         [IO.Directory]::CreateDirectory((Split-Path $move.To -Parent)) | Out-Null
         if (-not (Test-SameDirectoryIdentity $move.From $move.Identity)) { Throw-SwitchError UnsafePath 'Source identity changed.' }
         Add-JournalEntry $Context $state.TransactionId Intent $id $move $null
-        Move-ManagedDirectory $move.From $move.To
+        Move-ManagedDirectory $move.From $move.To -Context $Context -Role $move.Role
         Add-JournalEntry $Context $state.TransactionId Done $id $move $null
     }
     New-OperationResult
@@ -159,10 +167,12 @@ function Undo-DirectoryExchange { param($Context,[string]$TransactionId)
     foreach ($entry in $intents) {
         $move=$entry.Before
         $null=Test-ManagedPath $Context $move.From $move.Role; $null=Test-ManagedPath $Context $move.To $move.Role
+        Resolve-InterruptedTransfer $Context $move.From $move.To $move.Identity -Rollback
+        Resolve-InterruptedTransfer $Context $move.To $move.From $null -Rollback
         if (Test-SameDirectoryIdentity $move.From $move.Identity) { continue }
         if ((Test-Path -LiteralPath $move.From) -or -not (Test-SameDirectoryIdentity $move.To $move.Identity)) { Throw-SwitchError RecoveryRequired "Cannot identify directory for $($entry.StepId)." }
         Add-JournalEntry $Context $TransactionId Intent ('undo-'+$entry.StepId) $move $null
-        Move-ManagedDirectory $move.To $move.From
+        Move-ManagedDirectory $move.To $move.From -Context $Context -Role $move.Role
         Add-JournalEntry $Context $TransactionId Done ('undo-'+$entry.StepId) $move $null
     }
     New-OperationResult
@@ -217,14 +227,13 @@ function Restore-EnvironmentAcl { param($Context,[object[]]$Trees)
     $dirs=Get-ActiveDirectories $Context
     foreach($tree in $Trees){
         $path=Test-ManagedPath $Context $dirs[$tree.Role] $tree.Role
-        $acl=Get-Acl -LiteralPath $path
-        $acl.SetSecurityDescriptorSddlForm($tree.RootSddl,[Security.AccessControl.AccessControlSections]::Access)
-        Set-Acl -LiteralPath $path -AclObject $acl
+        Set-TransferAcl $path $tree.RootSddl $true
         foreach($item in $tree.Files){
             $child=Assert-NoReparsePoint (Join-Path $path $item.Relative)
             if(-not $child.StartsWith($path+'\',[StringComparison]::OrdinalIgnoreCase)){Throw-SwitchError UnsafePath 'ACL target escaped its role directory.'}
-            if(Test-Path -LiteralPath $child){$acl=Get-Acl -LiteralPath $child;$acl.SetSecurityDescriptorSddlForm($item.Sddl,[Security.AccessControl.AccessControlSections]::Access);Set-Acl -LiteralPath $child -AclObject $acl}
+            if(Test-Path -LiteralPath $child){Set-TransferAcl $child $item.Sddl $item.IsDirectory}
         }
     }
 }
+. (Join-Path $PSScriptRoot 'Transfers.ps1')
 Export-ModuleMember -Function *-*

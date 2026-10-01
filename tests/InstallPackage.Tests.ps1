@@ -13,7 +13,7 @@ Describe 'First installation from a shared package' {
         $savedProgramData=$env:ProgramData
         $env:ProgramData=Join-Path $fixture 'ProgramData'
         [IO.Directory]::CreateDirectory($env:ProgramData)|Out-Null
-        $managedRoot=Join-Path $env:ProgramData 'GHUBSwitcher'
+        $managedRoot=Join-Path $package 'Data'
         $script=Join-Path $package 'Install-GHUBSwitcher.ps1'
         # Keep the real installer body and real modules; bind its import boundary
         # to the source module instances so Pester can isolate Windows privileges.
@@ -47,6 +47,9 @@ Describe 'First installation from a shared package' {
         (Read-AtomicJson (Join-Path $managedRoot 'registration.json')).ProfileRoot | Should -BeExactly $profile
         [IO.File]::ReadAllText((Join-Path $managedRoot 'Installers/lghub_installer_2021.3.exe'))|Should -BeExactly 'recipient legacy installer'
         Test-Path -LiteralPath (Join-Path $managedRoot 'App/Installers')|Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $env:ProgramData 'GHUBSwitcher')|Should -BeFalse
+        (Read-AtomicJson (Join-Path $managedRoot 'registration.json')).Portable | Should -BeTrue
+        (Read-AtomicJson (Join-Path $managedRoot 'registration.json')).Root | Should -BeExactly $managedRoot
     }
     It 'does not create a broken installation when the bundled installer is absent' {
         Remove-Item -LiteralPath $legacy
@@ -65,7 +68,7 @@ Describe 'First installation from a shared package' {
         Mock Copy-Item {throw 'fixture disk failure'} -ParameterFilter {$Destination -like '*GHUBSwitcher.Install-*'}
         {& $script -OwnerSid $owner}|Should -Throw '*disk failure*'
         Test-Path -LiteralPath $managedRoot | Should -BeFalse
-        @(Get-ChildItem -LiteralPath $env:ProgramData -Directory -Filter 'GHUBSwitcher.Install-*').Count|Should -Be 0
+        @(Get-ChildItem -LiteralPath $package -Directory -Filter 'GHUBSwitcher.Install-*').Count|Should -Be 0
     }
     It 'rejects an untrusted installer without creating the installation directory' {
         Mock Get-AuthenticodeSignature -ModuleName Release { [pscustomobject]@{Status='NotSigned';SignerCertificate=$null} }

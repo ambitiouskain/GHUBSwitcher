@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core.psm1') -DisableNameChecking
-$root=Join-Path $env:ProgramData 'GHUBSwitcher'
+$root=Split-Path $PSScriptRoot -Parent
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $ticket=Read-AtomicJson (Join-Path $root 'Status/launch.json')
 $status=Read-AtomicJson (Join-Path $root 'Status/status.json')

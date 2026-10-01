@@ -17,6 +17,14 @@ Describe 'Directory moves while Windows holds a temporary directory handle' {
         Test-Path -LiteralPath $from|Should -BeFalse
         Get-Content -LiteralPath (Join-Path $to 'slot.txt')|Should -Be latest-modern-settings
     }
+    It 'also retries the same-volume preservation move used inside a cross-volume transfer' {
+        $from=Join-Path $ctx.Root 'active/LocalData'
+        $to=$from+'.ghub-transfer-'+[guid]::NewGuid().ToString('N')
+        $thread=[DirectoryLockFixture]::HoldBriefly($from,700)
+        try {Move-TransferDirectory $from $to} finally {$thread.Join()}
+        Test-Path -LiteralPath $from|Should -BeFalse
+        Get-Content -LiteralPath (Join-Path $to 'slot.txt')|Should -Be modern
+    }
     It 'also waits during journal rollback and restores the original directory identities' {
         $original=Get-DirectoryIdentity (Join-Path $ctx.Root 'active/LocalData')
         $null=Invoke-DirectoryExchange $ctx modern legacy

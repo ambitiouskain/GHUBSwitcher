@@ -9,7 +9,8 @@ if($packaged -or (-not $LoadFunctionsOnly -and (Test-Path -LiteralPath (Join-Pat
     $checker=Join-Path $PSScriptRoot 'PackagePreflight.ps1'
     if((Get-FileHash -LiteralPath $checker).Hash -cne $expectedCheckerHash){throw 'Release verifier hash mismatch.'}
     . $checker
-    $installed=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') -ieq (Join-Path $env:ProgramData 'GHUBSwitcher/App')
+    $installed=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release-manifest.json') -Raw -Encoding UTF8|ConvertFrom-Json
+    $installed=[bool]$installed.InstalledRuntime
     $null=Get-VerifiedPackageBootstrap $PSScriptRoot -InstalledRuntime:$installed
 }
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core.psm1') -DisableNameChecking
@@ -43,11 +44,11 @@ function Format-MenuAction {param($Item)
     $Item.Key+'. '+$Item.Label
 }
 if($LoadFunctionsOnly){return}
-$root=Join-Path $env:ProgramData 'GHUBSwitcher'
+$root=Get-SwitcherRoot $PSScriptRoot
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if(-not (Test-Path -LiteralPath (Join-Path $root 'registration.json'))){
     if($ReadOnly){Write-Output '尚未安装切换器。';return}
-    Write-Host 'G HUB 双版本切换器：正在安装工具，请允许 Windows 管理员授权。'
+    Write-Host 'G HUB 双版本切换器：正在初始化便携目录，请允许 Windows 管理员授权。'
     Write-Host '安装后按向导准备本机的新版与旧版环境。'
     $installer=Join-Path $PSScriptRoot 'Install-GHUBSwitcher.ps1'
     $shell="$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -66,6 +67,8 @@ do{
     $readyPath=Join-Path $root 'Status/environments.json'
     $legacyReady=$false;if(Test-Path -LiteralPath $readyPath){$legacyReady=(Read-AtomicJson $readyPath).LegacyReady}
     Write-Host "`nG HUB 双版本切换器"
+    Write-Host ('数据目录：'+$root)
+    Write-Host ('新版备份：'+(Join-Path $root 'Backups'))
     Write-Host ('状态：'+(Format-HealthMessage $state))
     Write-Host ('活动槽：'+$state.Active+'；目标槽：'+$state.Target)
     if($state.LastError){$label=if($state.Phase -eq 'Idle' -and $state.Health -eq 'TechnicalPassed'){'上次操作记录（当前环境已恢复）：'}else{'详情：'};Write-Host ($label+$state.LastError)}

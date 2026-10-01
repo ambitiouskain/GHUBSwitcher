@@ -19,6 +19,28 @@ Describe 'Preparation guards' {
         { Assert-LegacyPreparation $true $false '2021.3.5164' } | Should -Throw '*InvalidSignature*'
     }
 }
+Describe 'First backup serialization' {
+    BeforeEach {
+        $initialContext=New-TestContext (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        Mock Assert-Administrator -ModuleName Bootstrap {}
+        Mock Get-Item -ModuleName Bootstrap {@{FullName='fixture.exe';VersionInfo=@{FileVersion='2021.3.5164'}}}
+        Mock Get-AuthenticodeSignature -ModuleName Bootstrap {@{Status='Valid';SignerCertificate=@{Subject='O=Logitech Inc'}}}
+        Mock Capture-CurrentEnvironment -ModuleName Bootstrap {throw 'Capture must not start.'}
+    }
+    It 'refuses to capture or stop G HUB while another operation holds the lease' {
+        $lease=Enter-SwitchLock $initialContext
+        try{
+            {Initialize-GHUBSwitcher $initialContext 'fixture.exe' -AutomaticUpdatesObservedOff}|Should -Throw '*Busy*'
+            Should -Invoke Capture-CurrentEnvironment -ModuleName Bootstrap -Times 0 -Exactly
+        }finally{$lease.Dispose()}
+    }
+    It 'rejects another portable instance before capturing any configuration' {
+        Mock Assert-PortableInstance -ModuleName Bootstrap {Throw-SwitchError OtherInstance 'Another folder manages G HUB.'}
+        {Initialize-GHUBSwitcher $initialContext 'fixture.exe' -AutomaticUpdatesObservedOff}|Should -Throw '*OtherInstance*'
+        Should -Invoke Capture-CurrentEnvironment -ModuleName Bootstrap -Times 0 -Exactly
+        $lease=Enter-SwitchLock $initialContext;$lease.Dispose()
+    }
+}
 Describe 'Independent backup restoration' {
     It 'restores a verified backup while preserving the displaced environment' {
         $ctx=New-TestContext (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))

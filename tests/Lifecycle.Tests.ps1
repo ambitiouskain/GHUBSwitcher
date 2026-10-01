@@ -99,6 +99,34 @@ Describe 'Noninteractive process quiescence' {
     }
 }
 Describe 'Privileged owner-login continuation' {
+    It 'accepts an existing task from the same literal folder containing square brackets' {
+        InModuleScope Lifecycle {
+            Mock Get-ScheduledTask {@{Actions=@{Arguments='-File "D:\GHUBSwitcher[portable]\Data\App\Start-GHUBUserSession.ps1"'}}}
+            {Assert-PortableInstance @{Root='D:\GHUBSwitcher[portable]\Data';Portable=$true}}|Should -Not -Throw
+        }
+    }
+    It 'rejects an existing task from another portable folder' {
+        InModuleScope Lifecycle {
+            Mock Get-ScheduledTask {@{Actions=@{Arguments='-File "D:\Other\Data\App\Start-GHUBUserSession.ps1"'}}}
+            {Assert-PortableInstance @{Root='D:\GHUBSwitcher[portable]\Data';Portable=$true}}|Should -Throw '*OtherInstance*'
+        }
+    }
+    It 'disables unguarded vendor startup and registers only a limited on-demand task for portable mode' {
+        InModuleScope Lifecycle {
+            Mock Assert-Administrator {}
+            Mock Get-ScheduledTask {}
+            Mock Register-ScheduledTask {}
+            Mock Read-RegistryValue {@{Exists=$true;Value='vendor-command'}}
+            Mock Remove-ItemProperty {}
+            Mock Disable-ScheduledTask {}
+            $ctx=@{Root='D:\portable\Data';OwnerSid='S-1-5-21-1-2-3-1001';Portable=$true}
+            $null=Install-StartupControl $ctx @{Startup=@(@{Path='vendor';Name='G HUB';Value='vendor-command'});Tasks=@(@{Name='VendorTask';Path='\\'})}
+            Should -Invoke Remove-ItemProperty -Times 1 -Exactly -ParameterFilter {$LiteralPath -eq 'vendor' -and $Name -eq 'G HUB'}
+            Should -Invoke Disable-ScheduledTask -Times 1 -Exactly -ParameterFilter {$TaskName -eq 'VendorTask'}
+            Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {$TaskName -eq 'GHUBSwitcher-UserSession' -and $Principal.RunLevel -eq 0 -and $Action.Arguments -like '*D:\portable\Data\App\Start-GHUBUserSession.ps1*'}
+            Should -Invoke Register-ScheduledTask -Times 0 -ParameterFilter {$Principal.UserId -eq 'SYSTEM'}
+        }
+    }
     It 'registers owner login and startup on the privileged worker and queues overlapping triggers' {
         InModuleScope Lifecycle {
             Mock Assert-Administrator {}

@@ -7,7 +7,7 @@ Describe 'Recipient package preflight' {
     BeforeEach {
         $package=Join-Path $TestDrive ([Guid]::NewGuid().ToString('N')+' 解压目录')
         [IO.Directory]::CreateDirectory((Join-Path $package 'Installers'))|Out-Null
-        foreach($name in @('GHUBSwitcher.exe','Start-GHUBSwitcher.ps1','Install-GHUBSwitcher.ps1','Invoke-GHUBWorker.ps1','Start-GHUBUserSession.ps1','PackagePreflight.ps1','Native/GHubSwitcher.Native.dll','Modules/Core.psm1','Modules/Inventory.psm1','Modules/Storage.psm1','Modules/Drivers.psm1','Modules/Lifecycle.psm1','Modules/Coordinator.psm1','Modules/Bootstrap.psm1','Modules/InstallerAudit.psm1','Modules/ExternalRecovery.psm1','Modules/Release.psm1')){
+        foreach($name in @('GHUBSwitcher.exe','Start-GHUBSwitcher.ps1','Install-GHUBSwitcher.ps1','Invoke-GHUBWorker.ps1','Start-GHUBUserSession.ps1','PackagePreflight.ps1','Native/GHubSwitcher.Native.dll','Modules/Core.psm1','Modules/Inventory.psm1','Modules/Storage.psm1','Modules/Drivers.psm1','Modules/Lifecycle.psm1','Modules/Coordinator.psm1','Modules/Bootstrap.psm1','Modules/InstallerAudit.psm1','Modules/ExternalRecovery.psm1','Modules/Release.psm1','Modules/Transfers.ps1')){
             $path=Join-Path $package $name
             [IO.Directory]::CreateDirectory((Split-Path $path -Parent))|Out-Null
             [IO.File]::WriteAllText($path,'runtime fixture')
@@ -21,7 +21,7 @@ Describe 'Recipient package preflight' {
     It 'verifies the same complete package after moving it to a new path' {
         $relocated=Join-Path $TestDrive '别人电脑的 文件夹'
         Move-Item -LiteralPath $package -Destination $relocated
-        (Get-VerifiedRelease $relocated).Files.Count | Should -Be 18
+        (Get-VerifiedRelease $relocated).Files.Count | Should -Be 19
     }
     It 'rejects a changed bundled installer before installation' {
         [IO.File]::AppendAllText((Join-Path $package 'Installers/lghub_installer_2021.3.exe'),'changed')
@@ -45,6 +45,6 @@ Describe 'Recipient package preflight' {
         $record=Get-Content -Raw -LiteralPath (Join-Path $package 'release-manifest.json')|ConvertFrom-Json
         $record.Files+=@{Path=$name;Sha256=(Get-FileHash -LiteralPath (Join-Path $package $name)).Hash.ToLowerInvariant()}
         [IO.File]::WriteAllText((Join-Path $package 'release-manifest.json'),($record|ConvertTo-Json -Depth 6),[Text.UTF8Encoding]::new($false))
-        (Get-VerifiedRelease $package).Files.Count|Should -Be 19
+        (Get-VerifiedRelease $package).Files.Count|Should -Be 20
     }
 }
