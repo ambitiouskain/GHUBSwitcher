@@ -267,6 +267,26 @@ Describe 'Quiesced registry capture and maintenance recovery' {
         $capturedBackup.Manifest.RegistryValues[0].Value | Should -Be 'after-stop'
         (Read-AtomicJson (Join-Path $quiescedContext.Root 'State/pre-capture-modern.json')).RegistryValues[0].Value | Should -Be 'after-stop'
     }
+    It 'captures <Slot> configuration in installation mode even when a stale device has no exportable INF' -TestCases @(@{Slot='modern';Version='2026.6.981214'},@{Slot='legacy';Version='2021.3.9205'}) {
+        param($Slot,$Version)
+        $quiescedManifest.Slot=$Slot;$quiescedManifest.ProductVersion=$Version
+        $quiescedManifest.Devices=@(@{InstanceId='ROOT\SYSTEM\0001';InfPath='';Service=''})
+        Write-AtomicJson (Join-Path $quiescedContext.Root 'registration.json') @{OwnerSid=$quiescedContext.OwnerSid;ValidationMode='InstallationAndConfiguration';RegistryRoots=@()}
+        Mock Get-GHUBInventory -ModuleName Bootstrap { [pscustomobject]@{ProductVersion=$script:quiescedManifest.ProductVersion;Directories=$script:quiescedManifest.Directories} }
+        Mock Export-ManagedDrivers -ModuleName Bootstrap {Throw-SwitchError SharedDependency 'Cannot export an inbox or unidentified driver:'}
+        $result=Capture-CurrentEnvironment $quiescedContext $Slot -AutomaticUpdatesObservedOff -DeferRegistration
+        $result.ProductVersion|Should -Be $Version
+        $result.DriverPackages.Count|Should -Be 0
+        $result.RegistryValues[0].Value|Should -Be 'after-stop'
+        $capturedBackup.Manifest.Slot|Should -Be $Slot
+        Should -Invoke Export-ManagedDrivers -ModuleName Bootstrap -Times 0 -Exactly
+        Should -Invoke New-EnvironmentBackup -ModuleName Bootstrap -Times 1 -Exactly
+    }
+    It 'retains mandatory driver export failure in strict technical mode' {
+        Mock Export-ManagedDrivers -ModuleName Bootstrap {Throw-SwitchError SharedDependency 'Cannot export an inbox or unidentified driver:'}
+        {Capture-CurrentEnvironment $quiescedContext modern -AutomaticUpdatesObservedOff -DeferRegistration}|Should -Throw '*SharedDependency*'
+        Should -Invoke New-EnvironmentBackup -ModuleName Bootstrap -Times 0 -Exactly
+    }
     It 'keeps the stopped registry checkpoint and file backup consistent for <Operation>' -TestCases @(@{Operation='PrepareLegacy'},@{Operation='MaintainModern'}) {
         param($Operation)
         if($Operation -eq 'PrepareLegacy'){$null=Capture-LegacyEnvironment $quiescedContext 'C:\fixture\legacy.exe'}else{$null=Maintain-ModernEnvironment $quiescedContext}

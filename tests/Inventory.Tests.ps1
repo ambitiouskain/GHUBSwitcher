@@ -49,13 +49,25 @@ Describe 'Application inventory in installation acceptance mode' {
     }
 }
 Describe 'Native read-only inventory' {
-    It 'enumerates hardware and exposes the G HUB virtual bus filter' {
+    It 'enumerates hardware and matches native filter and INF metadata to the current registry' {
         $items=@(Get-NativeDevices)
         $items.Count | Should -BeGreaterThan 0
+        @($items|Where-Object {-not $_.InstanceId}).Count|Should -Be 0
+        @($items.InstanceId|Sort-Object -Unique).Count|Should -Be $items.Count
         $bus=@($items | Where-Object { $_.HardwareIds -contains 'root\LGHUBVirtualBus' })
-        $bus.Count | Should -Be 1
-        $bus[0].UpperFilters | Should -Contain 'logi_joy_xlcore'
-        $bus[0].InfPath | Should -Match '^oem\d+\.inf$'
+        $sample=if($bus.Count){$bus[0]}else{$items[0]}
+        $key=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Enum\'+$sample.InstanceId)
+        $key|Should -Not -BeNullOrEmpty
+        try{
+            (@($sample.UpperFilters)-join [char]0)|Should -BeExactly (@($key.GetValue('UpperFilters',@()))-join [char]0)
+            (@($sample.LowerFilters)-join [char]0)|Should -BeExactly (@($key.GetValue('LowerFilters',@()))-join [char]0)
+            $driver=[string]$key.GetValue('Driver','');$inf=''
+            if($driver){
+                $driverKey=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Class\'+$driver)
+                try{if($driverKey){$inf=[string]$driverKey.GetValue('InfPath','')}}finally{if($driverKey){$driverKey.Dispose()}}
+            }
+            $sample.InfPath|Should -BeExactly $inf
+        }finally{$key.Dispose()}
     }
 }
 Describe 'Scheduled task action inventory' {

@@ -166,8 +166,13 @@ function Capture-CurrentEnvironment {param($Context,[string]$Slot,[switch]$Autom
     Write-AtomicJson (Join-Path $Context.Root 'registration.json') $registration
     Write-AtomicJson (Join-Path $Context.Root "State/pre-capture-$Slot.json") $manifest
     foreach($path in (Get-ActiveDirectories $Context).Values){if(-not (Test-Path -LiteralPath $path)){[IO.Directory]::CreateDirectory($path)|Out-Null}}
-    Write-Host '正在导出驱动恢复包并校验程序文件。'
-    $manifest.DriverPackages=@(Export-ManagedDrivers $Context $manifest)
+    if(Test-InstallationConfigurationMode $Context){
+        $manifest.DriverPackages=@()
+        Write-Host '正在校验程序文件。'
+    }else{
+        Write-Host '正在导出驱动恢复包并校验程序文件。'
+        $manifest.DriverPackages=@(Export-ManagedDrivers $Context $manifest)
+    }
     $manifest.Files=@(Get-TreeFiles $manifest.Directories.Program | Where-Object {-not $_.IsDirectory})
     $identities=[ordered]@{};foreach($role in (Get-ActiveDirectories $Context).Keys){$identities[$role]=Get-DirectoryIdentity $manifest.Directories[$role] -Context $Context}
     $manifest|Add-Member -NotePropertyName DirectoryIdentities -NotePropertyValue $identities -Force
