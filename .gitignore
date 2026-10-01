@@ -1,0 +1,13 @@
+build/*.dll
+build/*.exe
+build/*.xml
+build/*.log
+testResults.xml
+tests/TestResults/
+.superpowers/
+*.tmp
+*.zip
+Installers/
+verification/
+registration.json
+settings.db*
