@@ -18,6 +18,8 @@ BeforeEach {
     [IO.Directory]::CreateDirectory((Join-Path $repo 'src/Modules')) | Out-Null
     [IO.File]::WriteAllText((Join-Path $repo 'src/Modules/Release.psm1'), 'function Get-VerifiedLegacyInstaller { param([string]$Path) if(-not [IO.File]::Exists($Path)){throw ''Missing legacy installer''}; Get-Item -LiteralPath $Path }')
     [IO.File]::WriteAllText((Join-Path $repo 'docs/分发使用说明.md'), 'shareable instructions')
+    [IO.File]::WriteAllText((Join-Path $repo 'LICENSE'), 'MIT license fixture')
+    [IO.File]::WriteAllText((Join-Path $repo 'THIRD_PARTY_NOTICES.md'), 'third party notices fixture')
     foreach ($file in @('src/Start-GHUBSwitcher.ps1','src/Native/DeviceApi.cs','tests/nested/Fixture.Tests.ps1','docs/nested/detail.md','docs/操作说明.md','docs/acceptance.md','.gitignore','tools/Pester/5.7.1/LICENSE.txt')) {
         [IO.File]::WriteAllText((Join-Path $repo $file), 'fixture')
     }
@@ -68,6 +70,8 @@ AfterEach {
         Test-Path -LiteralPath (Join-Path $output 'source') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $output 'verification') | Should -BeFalse
         [IO.File]::ReadAllText((Join-Path $output '使用说明.md')) | Should -BeExactly 'shareable instructions'
+        [IO.File]::ReadAllText((Join-Path $output 'LICENSE')) | Should -BeExactly 'MIT license fixture'
+        [IO.File]::ReadAllText((Join-Path $output 'THIRD_PARTY_NOTICES.md')) | Should -BeExactly 'third party notices fixture'
         $manifest=Get-Content -Raw -LiteralPath (Join-Path $output 'release-manifest.json')|ConvertFrom-Json
         $manifest.Distribution | Should -BeTrue
         foreach($file in $manifest.Files){

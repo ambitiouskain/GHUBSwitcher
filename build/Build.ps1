@@ -60,6 +60,9 @@ if($Distribution){
         $null=Get-VerifiedLegacyInstaller $copiedLegacy
     }finally{$legacyGuard.Dispose()}
     Copy-Item -LiteralPath (Join-Path $root 'docs/分发使用说明.md') -Destination (Join-Path $output '使用说明.md')
+    foreach($notice in @('LICENSE','THIRD_PARTY_NOTICES.md')){
+        Copy-Item -LiteralPath (Join-Path $root $notice) -Destination (Join-Path $output $notice)
+    }
 }else{
 foreach($dir in @('src','tests','docs','tools/Pester')){
     $base=Join-Path $root $dir
